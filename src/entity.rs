@@ -56,14 +56,16 @@ impl Iterator for CartesianProduct {
         for i in (0..len).rev() {
             let LengthAndOffset { length, offset } = self.lengths_and_offsets[i];
             let last_index = length + offset;
-            if self.indices[i] == (last_index - 1) {
-                self.indices[i] = offset;
-                if i == 0 {
-                    self.has_next = false;
+            if last_index > 0 {
+                if self.indices[i] == (last_index - 1) {
+                    self.indices[i] = offset;
+                    if i == 0 {
+                        self.has_next = false;
+                    }
+                } else {
+                    self.indices[i] += 1;
+                    break;
                 }
-            } else {
-                self.indices[i] += 1;
-                break;
             }
         }
         Some(result)

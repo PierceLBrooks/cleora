@@ -13,6 +13,7 @@ use std::hash::Hasher;
 use std::marker::PhantomData;
 use std::sync::Arc;
 use uuid::Uuid;
+use std::num::Wrapping;
 
 /// Number of broken entities (those with errors during writing to the file) which are logged.
 /// There can be much more but log the first few.
@@ -132,7 +133,7 @@ impl MatrixWrapper for TwoDimVectorMatrix {
 }
 
 fn init_value(col: usize, hsh: u64, fixed_random_value: i64) -> f32 {
-    ((hash((hsh as i64) + (col as i64) + fixed_random_value) % MAX_HASH_I64) as f32) / MAX_HASH_F32
+    ((hash((hsh as i64).wrapping_add(col as i64).wrapping_add(fixed_random_value)) % MAX_HASH_I64) as f32) / MAX_HASH_F32
 }
 
 fn hash(num: i64) -> i64 {
