@@ -79,6 +79,9 @@ pub struct SparseMatrix {
 
     /// Coordinates and values of nonzero entities
     entries: Vec<Entry>,
+
+    /// Weights
+    weights: FxHashMap<u64, FxHashMap<u64, u64>>,
 }
 
 /// Hash data
@@ -155,6 +158,7 @@ impl SparseMatrix {
             row_sum: Vec::new(),
             pair_index: FxHashMap::default(),
             entries: Vec::new(),
+            weights: FxHashMap::default(),
         }
     }
 
@@ -175,6 +179,14 @@ impl SparseMatrix {
             hashes[(a + 1) as usize],
             hashes[(b + 1) as usize],
             hashes[0],
+        );
+    }
+    
+    pub fn handle_weight(&mut self, weights: &[u64]) {
+        self.set_weight(
+            weights[0],
+            weights[1],
+            weights[2],
         );
     }
 
@@ -198,7 +210,7 @@ impl SparseMatrix {
         let a = self.update_hash_and_get_id(a_hash);
         let b = self.update_hash_and_get_id(b_hash);
 
-        let value = 1f32 / (count as f32);
+        let value = self.get_weight(a_hash, b_hash) / (count as f32);
 
         self.edge_count += 1;
 
@@ -261,6 +273,25 @@ impl SparseMatrix {
         } else {
             self.row_sum.push(val);
         };
+    }
+
+    fn get_weight(&self, left: u64, right: u64) -> f32 {
+        match self.weights.get(&left) {
+            Some(outer) => {
+                match outer.get(&right) {
+                    Some(inner) => *inner as f32,
+                    None => 1f32
+                }
+            },
+            None => 1f32
+        }
+    }
+
+    fn set_weight(&mut self, left: u64, right: u64, weight: u64) {
+        if !self.weights.contains_key(&left) {
+            self.weights.insert(left, FxHashMap::default());
+        }
+        self.weights.get_mut(&left).unwrap().insert(right, weight);
     }
 
     /// Normalization and other tasks after sparse matrix construction.

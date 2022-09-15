@@ -4,6 +4,8 @@ use smallvec::{smallvec, SmallVec};
 use std::hash::Hasher;
 use std::sync::Arc;
 use twox_hash::XxHash64;
+use rustc_hash::FxHashMap;
+use log::info;
 
 /// Indicates how many elements in a vector can be placed on Stack (used by smallvec crate). The rest
 /// of the vector is placed on Heap.
@@ -70,10 +72,11 @@ impl Iterator for CartesianProduct {
     }
 }
 
-pub struct EntityProcessor<'a, T, F>
+pub struct EntityProcessor<'a, T, F, G>
 where
     T: EntityMappingPersistor,
     F: FnMut(SmallVec<[u64; SMALL_VECTOR_SIZE]>),
+    G: FnMut(u64, u64, u64),
 {
     config: &'a Configuration,
     field_hashes: SmallVec<[u64; SMALL_VECTOR_SIZE]>,
@@ -81,18 +84,25 @@ where
     columns_count: u16,
     entity_mapping_persistor: Arc<T>,
     hashes_handler: F,
+    weights_handler: G,
+    weights: FxHashMap<u64, FxHashMap<u64, u64>>,
+    weights_count: u64,
+    log_every: u64,
 }
 
-impl<'a, T, F> EntityProcessor<'a, T, F>
+impl<'a, T, F, G> EntityProcessor<'a, T, F, G>
 where
     T: EntityMappingPersistor,
     F: FnMut(SmallVec<[u64; SMALL_VECTOR_SIZE]>),
+    G: FnMut(u64, u64, u64),
 {
     pub fn new(
         config: &'a Configuration,
         persistor: Arc<T>,
         hashes_handler: F,
-    ) -> EntityProcessor<'a, T, F> {
+        weights_handler: G,
+        log_every: u64
+    ) -> EntityProcessor<'a, T, F, G> {
         let columns = &config.columns;
         // hashes for column names are used to differentiate entities with the same name
         // from different columns
@@ -117,6 +127,27 @@ where
             columns_count,
             entity_mapping_persistor: persistor,
             hashes_handler,
+            weights_handler,
+            weights: FxHashMap::default(),
+            weights_count: 0u64,
+            log_every
+        }
+    }
+    
+    pub fn set_weight(&mut self, left: &str, right: &str, weight: u64) {
+        let left_hash = hash(left);
+        let right_hash = hash(right);
+        if !self.weights.contains_key(&left_hash) {
+            self.weights.insert(left_hash, FxHashMap::default());
+        }
+        if self.weights[&left_hash].contains_key(&right_hash) {
+            return
+        }
+        self.weights.get_mut(&left_hash).unwrap().insert(right_hash, weight);
+        (self.weights_handler)(left_hash, right_hash, weight);
+        self.weights_count += 1;
+        if self.weights_count % self.log_every == 0 {
+            info!("Number of weights processed: {}", self.weights_count);
         }
     }
 

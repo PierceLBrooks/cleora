@@ -1,7 +1,7 @@
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 
-use crate::configuration::{Column, Configuration, FileType, OutputFormat};
+use crate::configuration::{Column, Configuration, FileType, OutputFormat, JsonPair};
 use crate::embedding::{calculate_embeddings, calculate_embeddings_mmap};
 use crate::entity::{EntityProcessor, SMALL_VECTOR_SIZE};
 use crate::persistence::embedding::{EmbeddingPersistor, NpyPersistor, TextFileVectorPersistor};
@@ -10,9 +10,11 @@ use crate::sparse_matrix::{create_sparse_matrices, SparseMatrix};
 use bus::Bus;
 use log::{error, info, warn};
 use simdjson_rust::dom;
-use smallvec::{smallvec, SmallVec};
+use smallvec::SmallVec;
 use std::sync::Arc;
 use std::thread;
+use rustc_hash::FxHashMap;
+use std::sync::mpsc::TryRecvError;
 
 /// Create SparseMatrix'es based on columns config. Every SparseMatrix operates in separate
 /// thread. EntityProcessor reads data in main thread and broadcast cartesian products
@@ -25,12 +27,37 @@ pub fn build_graphs(
     dbg!(&sparse_matrices);
 
     let mut bus: Bus<SmallVec<[u64; SMALL_VECTOR_SIZE]>> = Bus::new(128);
+    let mut bus_weights: Bus<SmallVec<[u64; SMALL_VECTOR_SIZE]>> = Bus::new(192);
     let mut sparse_matrix_threads = Vec::new();
     for mut sparse_matrix in sparse_matrices {
-        let rx = bus.add_rx();
+        let mut rx = bus.add_rx();
+        let mut rx_weights = bus_weights.add_rx();
         let handle = thread::spawn(move || {
-            for received in rx {
-                sparse_matrix.handle_pair(&received);
+            let mut has_rx = true;
+            let mut has_rx_weights = true;
+            while has_rx || has_rx_weights {
+                if has_rx {
+                    match rx.try_recv() {
+                        Ok(received) => {
+                            sparse_matrix.handle_pair(&received);
+                        }
+                        Err(TryRecvError::Disconnected) => {
+                            has_rx = false;
+                        }
+                        _ => {}
+                    }
+                }
+                if has_rx_weights {
+                    match rx_weights.try_recv() {
+                        Ok(received_weights) => {
+                            sparse_matrix.handle_weight(&received_weights);
+                        }
+                        Err(TryRecvError::Disconnected) => {
+                            has_rx_weights = false;
+                        }
+                        _ => {}
+                    }
+                }
             }
             sparse_matrix.finish();
             sparse_matrix
@@ -45,14 +72,38 @@ pub fn build_graphs(
             |hashes| {
                 bus.broadcast(hashes);
             },
+            |left, right, weight| {
+                let mut arr: SmallVec<[u64; SMALL_VECTOR_SIZE]> = SmallVec::with_capacity(3);
+                arr.push(left);
+                arr.push(right);
+                arr.push(weight);
+                bus_weights.broadcast(arr);
+            },
+            config.log_every_n as u64,
         );
 
         match &config.file_type {
             FileType::Json => {
+                let config_col_num = config.columns.len();
                 let mut parser = dom::Parser::default();
                 read_file(input, config.log_every_n as u64, move |line| {
                     let row = parse_json_line(line, &mut parser, &config.columns);
-                    entity_processor.process_row(&row);
+                    let mapping: Vec<SmallVec<[String; SMALL_VECTOR_SIZE]>> = row.iter().map(|v| {
+                        v.iter().map(|p| {
+                            for outer in p.weights.keys() {
+                                for inner in p.weights[outer].keys() {
+                                    entity_processor.set_weight(outer, inner, p.weights[outer][inner])
+                                }
+                            }
+                            p.key.clone()
+                        }).collect()
+                    }).collect();
+                    let line_col_num = mapping.len();
+                    if line_col_num == config_col_num {
+                        entity_processor.process_row(&mapping);
+                    } else {
+                        warn!("Wrong number of columns (expected: {}, provided: {}). The line [{}] is skipped.", config_col_num, line_col_num, line);
+                    }
                 });
             }
             FileType::Tsv => {
@@ -71,6 +122,7 @@ pub fn build_graphs(
     }
 
     drop(bus);
+    drop(bus_weights);
 
     let mut sparse_matrices = vec![];
     for join_handle in sparse_matrix_threads {
@@ -108,12 +160,12 @@ where
             }
         };
 
+        if line_number % log_every == 0 {
+            info!("Number of lines processed: {} @ {}", line_number, line);
+        }
+        
         // clear to reuse the buffer
         line.clear();
-
-        if line_number % log_every == 0 {
-            info!("Number of lines processed: {}", line_number);
-        }
 
         line_number += 1;
     }
@@ -124,7 +176,7 @@ fn parse_json_line(
     line: &str,
     parser: &mut dom::Parser,
     columns: &[Column],
-) -> Vec<SmallVec<[String; SMALL_VECTOR_SIZE]>> {
+) -> Vec<Vec<JsonPair>> {
     let parsed = parser.parse(line).unwrap();
     columns
         .iter()
@@ -132,10 +184,25 @@ fn parse_json_line(
             if !c.complex {
                 let elem = parsed.at_key(&c.name).unwrap();
                 let value = match elem.get_type() {
-                    dom::element::ElementType::String => elem.get_string().unwrap(),
-                    _ => elem.minify(),
+                    dom::element::ElementType::String => JsonPair {
+                        key: elem.get_string().unwrap(),
+                        weights: FxHashMap::default()
+                    },
+                    dom::element::ElementType::Object => if !c.weight { JsonPair {
+                        key: elem.minify(),
+                        weights: FxHashMap::default()
+                    } } else { JsonPair {
+                        key: elem.minify(),
+                        weights: FxHashMap::default()
+                    } },
+                    _ => JsonPair {
+                        key: elem.minify(),
+                        weights: FxHashMap::default()
+                    },
                 };
-                smallvec![value]
+                let mut result = Vec::new();
+                result.push(value);
+                result
             } else {
                 parsed
                     .at_key(&c.name)
@@ -144,8 +211,65 @@ fn parse_json_line(
                     .expect("Values for complex columns must be arrays")
                     .into_iter()
                     .map(|v| match v.get_type() {
-                        dom::element::ElementType::String => v.get_string().unwrap(),
-                        _ => v.minify(),
+                        dom::element::ElementType::String => JsonPair {
+                            key: v.get_string().unwrap(),
+                            weights: FxHashMap::default()
+                        },
+                        dom::element::ElementType::Object => if !c.weight { JsonPair {
+                            key: v.minify(),
+                            weights: FxHashMap::default()
+                        } } else {
+                            let mut name: String = String::from("");
+                            let mut weights: FxHashMap<String, FxHashMap<String, u64>> = FxHashMap::default();
+                            for (left, right) in &v.get_object().unwrap() {
+                                match right.get_type() {
+                                    dom::element::ElementType::Object => {
+                                        name.push_str(&left);
+                                        weights.insert(left, FxHashMap::default());
+                                        for (outer, inner) in &right.get_object().unwrap() {
+                                            match inner.get_type() {
+                                                dom::element::ElementType::Double => {
+                                                    let dp = inner.get_f64().unwrap();
+                                                    if dp >= 0f64 {
+                                                        weights.get_mut(&name).unwrap().insert(outer, dp as u64);
+                                                    }
+                                                },
+                                                dom::element::ElementType::Int64 => {
+                                                    let si = inner.get_i64().unwrap();
+                                                    if si >= 0i64 {
+                                                        weights.get_mut(&name).unwrap().insert(outer, si as u64);
+                                                    }
+                                                },
+                                                dom::element::ElementType::Uint64 => {
+                                                    let ui = inner.get_u64().unwrap();
+                                                    weights.get_mut(&name).unwrap().insert(outer, ui);
+                                                },
+                                                _ => { inner.minify(); }
+                                            }
+                                        }
+                                    },
+                                    _ => { right.minify(); }
+                                }
+                                if name.len() > 0 {
+                                    break;
+                                }
+                            }
+                            if name.len() > 0 {
+                                JsonPair {
+                                    key: name,
+                                    weights: weights
+                                }
+                            } else {
+                                JsonPair {
+                                    key: v.minify(),
+                                    weights: FxHashMap::default()
+                                }
+                            }
+                        },
+                        _ => JsonPair {
+                            key: v.minify(),
+                            weights: FxHashMap::default()
+                        },
                     })
                     .collect()
             }

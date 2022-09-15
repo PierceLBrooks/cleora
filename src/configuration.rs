@@ -1,3 +1,5 @@
+use rustc_hash::FxHashMap;
+
 #[derive(Debug)]
 pub enum FileType {
     Json,
@@ -67,11 +69,24 @@ pub struct Column {
     /// The field is composite, containing multiple entity identifiers separated by space
     pub complex: bool,
 
+    /// The field has weight between edges
+    pub weight: bool,
+
     /// The field is reflexive, which means that it interacts with itself, additional output file is written for every such field
     pub reflexive: bool,
 
     /// The field is ignored, no output file is written for the field
     pub ignored: bool,
+}
+
+/// Json Pair configuration
+#[derive(Debug, Default)]
+pub struct JsonPair {
+    /// Key
+    pub key: String,
+
+    /// Weights
+    pub weights: FxHashMap<String, FxHashMap<String, u64>>
 }
 
 impl Configuration {
@@ -110,6 +125,7 @@ pub fn extract_fields(cols: Vec<&str>) -> Result<Vec<Column>, String> {
         let column_name: &str;
         let mut transient = false;
         let mut complex = false;
+        let mut weight = false;
         let mut reflexive = false;
         let mut ignored = false;
 
@@ -122,6 +138,8 @@ pub fn extract_fields(cols: Vec<&str>) -> Result<Vec<Column>, String> {
                     transient = true;
                 } else if part.eq_ignore_ascii_case("complex") {
                     complex = true;
+                } else if part.eq_ignore_ascii_case("weight") {
+                    weight = true;
                 } else if part.eq_ignore_ascii_case("reflexive") {
                     reflexive = true;
                 } else if part.eq_ignore_ascii_case("ignore") {
@@ -138,6 +156,7 @@ pub fn extract_fields(cols: Vec<&str>) -> Result<Vec<Column>, String> {
             name: column_name.to_string(),
             transient,
             complex,
+            weight,
             reflexive,
             ignored,
         };
