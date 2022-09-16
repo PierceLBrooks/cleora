@@ -146,9 +146,6 @@ where
         self.weights.get_mut(&left_hash).unwrap().insert(right_hash, weight);
         (self.weights_handler)(left_hash, right_hash, weight);
         self.weights_count += 1;
-        if self.weights_count % self.log_every == 0 {
-            info!("Number of weights processed: {}", self.weights_count);
-        }
     }
 
     /// Every row can create few combinations (cartesian products) which are hashed and provided for sparse matrix creation.

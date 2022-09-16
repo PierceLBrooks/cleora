@@ -22,7 +22,7 @@ rayon = "1.5.3"
 rustc-hash = "1.1.0"
 smallvec = "1.8.1"
 twox-hash = "1.6.3"
-simdjson-rust = {git = "https://github.com/SunDoge/simdjson-rust"}
+json = "*"
 ryu = "1.0.10"
 ndarray = "0.15.4"
 ndarray-npy = "0.8.1"

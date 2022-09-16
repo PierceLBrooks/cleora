@@ -9,7 +9,6 @@ use crate::persistence::entity::InMemoryEntityMappingPersistor;
 use crate::sparse_matrix::{create_sparse_matrices, SparseMatrix};
 use bus::Bus;
 use log::{error, info, warn};
-use simdjson_rust::dom;
 use smallvec::SmallVec;
 use std::sync::Arc;
 use std::thread;
@@ -85,9 +84,8 @@ pub fn build_graphs(
         match &config.file_type {
             FileType::Json => {
                 let config_col_num = config.columns.len();
-                let mut parser = dom::Parser::default();
                 read_file(input, config.log_every_n as u64, move |line| {
-                    let row = parse_json_line(line, &mut parser, &config.columns);
+                    let row = parse_json_line(line, &config.columns);
                     let mapping: Vec<SmallVec<[String; SMALL_VECTOR_SIZE]>> = row.iter().map(|v| {
                         v.iter().map(|p| {
                             for outer in p.weights.keys() {
@@ -161,7 +159,7 @@ where
         };
 
         if line_number % log_every == 0 {
-            info!("Number of lines processed: {} @ {}", line_number, line);
+            info!("Number of lines processed: {}", line_number);
         }
         
         // clear to reuse the buffer
@@ -174,29 +172,29 @@ where
 /// Parse a line of JSON and read its columns into a vector for processing.
 fn parse_json_line(
     line: &str,
-    parser: &mut dom::Parser,
     columns: &[Column],
 ) -> Vec<Vec<JsonPair>> {
-    let parsed = parser.parse(line).unwrap();
+    let parsed = json::parse(line).unwrap();
     columns
         .iter()
         .map(|c| {
+            let column = &c.name;
             if !c.complex {
-                let elem = parsed.at_key(&c.name).unwrap();
-                let value = match elem.get_type() {
-                    dom::element::ElementType::String => JsonPair {
-                        key: elem.get_string().unwrap(),
+                let elem = &parsed[column];
+                let value = match *elem {
+                    json::JsonValue::String(ref _string) => JsonPair {
+                        key: String::from(elem.as_str().unwrap()),
                         weights: FxHashMap::default()
                     },
-                    dom::element::ElementType::Object => if !c.weight { JsonPair {
-                        key: elem.minify(),
+                    json::JsonValue::Object(ref _object) => if !c.weight { JsonPair {
+                        key: String::from(""),
                         weights: FxHashMap::default()
                     } } else { JsonPair {
-                        key: elem.minify(),
+                        key: String::from(""),
                         weights: FxHashMap::default()
                     } },
                     _ => JsonPair {
-                        key: elem.minify(),
+                        key: String::from(""),
                         weights: FxHashMap::default()
                     },
                 };
@@ -205,50 +203,34 @@ fn parse_json_line(
                 result
             } else {
                 parsed
-                    .at_key(&c.name)
-                    .unwrap()
-                    .get_array()
-                    .expect("Values for complex columns must be arrays")
-                    .into_iter()
-                    .map(|v| match v.get_type() {
-                        dom::element::ElementType::String => JsonPair {
-                            key: v.get_string().unwrap(),
+                    [column]
+                    .members()
+                    .map(|v| match *v {
+                        json::JsonValue::String(ref _string) => JsonPair {
+                            key: String::from(v.as_str().unwrap()),
                             weights: FxHashMap::default()
                         },
-                        dom::element::ElementType::Object => if !c.weight { JsonPair {
-                            key: v.minify(),
+                        json::JsonValue::Object(ref _temp) => if !c.weight { JsonPair {
+                            key: String::from(""),
                             weights: FxHashMap::default()
                         } } else {
                             let mut name: String = String::from("");
                             let mut weights: FxHashMap<String, FxHashMap<String, u64>> = FxHashMap::default();
-                            for (left, right) in &v.get_object().unwrap() {
-                                match right.get_type() {
-                                    dom::element::ElementType::Object => {
+                            for (left, right) in v.entries() {
+                                match *right {
+                                    json::JsonValue::Object(ref _object) => {
                                         name.push_str(&left);
-                                        weights.insert(left, FxHashMap::default());
-                                        for (outer, inner) in &right.get_object().unwrap() {
-                                            match inner.get_type() {
-                                                dom::element::ElementType::Double => {
-                                                    let dp = inner.get_f64().unwrap();
-                                                    if dp >= 0f64 {
-                                                        weights.get_mut(&name).unwrap().insert(outer, dp as u64);
-                                                    }
+                                        weights.insert(left.to_string(), FxHashMap::default());
+                                        for (outer, inner) in right.entries() {
+                                            match *inner {
+                                                json::JsonValue::Number(ref _number) => {
+                                                    weights.get_mut(&name).unwrap().insert(outer.to_string(), inner.as_u64().unwrap());
                                                 },
-                                                dom::element::ElementType::Int64 => {
-                                                    let si = inner.get_i64().unwrap();
-                                                    if si >= 0i64 {
-                                                        weights.get_mut(&name).unwrap().insert(outer, si as u64);
-                                                    }
-                                                },
-                                                dom::element::ElementType::Uint64 => {
-                                                    let ui = inner.get_u64().unwrap();
-                                                    weights.get_mut(&name).unwrap().insert(outer, ui);
-                                                },
-                                                _ => { inner.minify(); }
+                                                _ => {}
                                             }
                                         }
                                     },
-                                    _ => { right.minify(); }
+                                    _ => {}
                                 }
                                 if name.len() > 0 {
                                     break;
@@ -261,13 +243,13 @@ fn parse_json_line(
                                 }
                             } else {
                                 JsonPair {
-                                    key: v.minify(),
+                                    key: String::from(""),
                                     weights: FxHashMap::default()
                                 }
                             }
                         },
                         _ => JsonPair {
-                            key: v.minify(),
+                            key: String::from(""),
                             weights: FxHashMap::default()
                         },
                     })

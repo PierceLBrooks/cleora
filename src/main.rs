@@ -13,6 +13,9 @@ use std::sync::Arc;
 #[macro_use]
 extern crate log;
 
+#[macro_use]
+extern crate json;
+
 fn main() {
     let env = Env::default()
         .filter_or("MY_LOG_LEVEL", "info")
