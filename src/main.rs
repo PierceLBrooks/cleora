@@ -12,8 +12,6 @@ use std::sync::Arc;
 
 #[macro_use]
 extern crate log;
-
-#[macro_use]
 extern crate json;
 
 fn main() {

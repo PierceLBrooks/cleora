@@ -78,7 +78,6 @@ pub fn build_graphs(
                 arr.push(weight);
                 bus_weights.broadcast(arr);
             },
-            config.log_every_n as u64,
         );
 
         match &config.file_type {

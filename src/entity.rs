@@ -5,7 +5,6 @@ use std::hash::Hasher;
 use std::sync::Arc;
 use twox_hash::XxHash64;
 use rustc_hash::FxHashMap;
-use log::info;
 
 /// Indicates how many elements in a vector can be placed on Stack (used by smallvec crate). The rest
 /// of the vector is placed on Heap.
@@ -86,8 +85,6 @@ where
     hashes_handler: F,
     weights_handler: G,
     weights: FxHashMap<u64, FxHashMap<u64, u64>>,
-    weights_count: u64,
-    log_every: u64,
 }
 
 impl<'a, T, F, G> EntityProcessor<'a, T, F, G>
@@ -101,7 +98,6 @@ where
         persistor: Arc<T>,
         hashes_handler: F,
         weights_handler: G,
-        log_every: u64
     ) -> EntityProcessor<'a, T, F, G> {
         let columns = &config.columns;
         // hashes for column names are used to differentiate entities with the same name
@@ -129,8 +125,6 @@ where
             hashes_handler,
             weights_handler,
             weights: FxHashMap::default(),
-            weights_count: 0u64,
-            log_every
         }
     }
     
@@ -145,7 +139,6 @@ where
         }
         self.weights.get_mut(&left_hash).unwrap().insert(right_hash, weight);
         (self.weights_handler)(left_hash, right_hash, weight);
-        self.weights_count += 1;
     }
 
     /// Every row can create few combinations (cartesian products) which are hashed and provided for sparse matrix creation.
